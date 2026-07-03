@@ -251,13 +251,39 @@ def install():
     work_dir = Path(cfg.config.working_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download GeoIP and GeoSite databases
+    # Download GeoIP and GeoSite databases (with mirrors)
     geo_dir = work_dir
     click.echo("\n4. 下载 GeoIP 数据库...")
-    os.system(f"curl -L -o {geo_dir}/geoip.dat https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat 2>/dev/null || wget -O {geo_dir}/geoip.dat https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat 2>/dev/null || echo '请手动下载 geoip.dat'")
+    for url in [
+        f"https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+        f"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+        f"https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+    ]:
+        if os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
+            break
+        click.echo(f"  尝试: {url[:50]}...")
+        ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geoip.dat" "{url}" 2>/dev/null')
+        if ret == 0 and os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
+            click.echo("  ✓ 下载成功")
+            break
+    else:
+        click.echo("  ✗ 下载失败，请手动下载 geoip.dat 到 /etc/vpn-manager/")
 
     click.echo("\n5. 下载 GeoSite 数据库...")
-    os.system(f"curl -L -o {geo_dir}/geosite.dat https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat 2>/dev/null || wget -O {geo_dir}/geosite.dat https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat 2>/dev/null || echo '请手动下载 geosite.dat'")
+    for url in [
+        f"https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+        f"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+        f"https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+    ]:
+        if os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
+            break
+        click.echo(f"  尝试: {url[:50]}...")
+        ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geosite.dat" "{url}" 2>/dev/null')
+        if ret == 0 and os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
+            click.echo("  ✓ 下载成功")
+            break
+    else:
+        click.echo("  ✗ 下载失败，请手动下载 geosite.dat 到 /etc/vpn-manager/")
 
     click.echo("\n✓ 安装完成！")
     click.echo("   运行 python3 main.py web 启动 Web 面板")

@@ -20,6 +20,37 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
 step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
+# Try multiple mirror URLs for GitHub resources (China-friendly)
+download_with_mirrors() {
+    local output="$1"
+    shift
+    local urls=("$@")
+    for url in "${urls[@]}"; do
+        local mirror_url="$url"
+        # If direct GitHub URL fails, try ghproxy
+        if echo "$url" | grep -q "^https://github.com"; then
+            mirror_url="https://ghproxy.com/$url"
+        fi
+        # Try jsDelivr CDN for GitHub raw content
+        local jsdelivr_url=""
+        if echo "$url" | grep -q "github.com.*releases/download"; then
+            jsdelivr_url=$(echo "$url" | sed 's|https://github.com/\([^/]*\)/\([^/]*\)/releases/download/latest/\(.*\)|https://cdn.jsdelivr.net/gh/\1/\2@release/\3|')
+        fi
+
+        for try_url in "$jsdelivr_url" "$mirror_url" "$url"; do
+            [ -z "$try_url" ] && continue
+            info "尝试: $try_url"
+            if curl -L --connect-timeout 5 --max-time 30 -o "$output" "$try_url" 2>/dev/null; then
+                if [ -s "$output" ]; then
+                    info "下载成功"
+                    return 0
+                fi
+            fi
+        done
+    done
+    return 1
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/vpn-manager"
 WORK_DIR="/etc/vpn-manager"
@@ -84,52 +115,51 @@ install_mihomo() {
         return 0
     fi
 
-    # Determine the latest version
+    # Try to detect latest version via proxy-friendly API
     info "获取最新版本信息..."
-    LATEST_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-        | grep "browser_download_url.*mihomo-linux-${ARCH}" \
-        | grep -v "gz" \
-        | head -1 \
-        | cut -d '"' -f 4)
+    VERSION_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+    VERSION=$(curl -s --connect-timeout 5 --max-time 10 "$VERSION_URL" 2>/dev/null \
+        | grep '"tag_name"' \
+        | cut -d '"' -f 4 \
+        | sed 's/^v//')
 
-    if [ -z "$LATEST_URL" ]; then
-        # Fallback: try to find any compatible release
-        LATEST_URL=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-            | grep "browser_download_url" \
-            | grep "linux-${ARCH}" \
-            | grep -v "gz" \
-            | head -1 \
-            | cut -d '"' -f 4)
+    if [ -z "$VERSION" ]; then
+        # Try ghproxy
+        VERSION=$(curl -s --connect-timeout 5 --max-time 10 "https://ghproxy.com/$VERSION_URL" 2>/dev/null \
+            | grep '"tag_name"' \
+            | cut -d '"' -f 4 \
+            | sed 's/^v//')
     fi
 
-    if [ -z "$LATEST_URL" ]; then
-        warn "无法自动获取 mihomo 下载链接，请手动安装"
-        warn "下载地址: https://github.com/MetaCubeX/mihomo/releases"
-        return 1
+    if [ -z "$VERSION" ]; then
+        warn "无法获取最新版本号，使用默认版本 v1.19.27"
+        VERSION="1.19.27"
     fi
 
-    info "下载: $LATEST_URL"
+    FILENAME="mihomo-linux-${ARCH}-v${VERSION}.gz"
+    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/v${VERSION}/${FILENAME}"
+
+    info "下载 mihomo v${VERSION}..."
     TMP_DIR=$(mktemp -d)
     cd "$TMP_DIR"
 
-    if curl -L -o mihomo.tar.gz "$LATEST_URL" --connect-timeout 10 --max-time 120; then
-        tar -xzf mihomo.tar.gz 2>/dev/null || unzip -o mihomo.tar.gz 2>/dev/null || true
+    if download_with_mirrors "mihomo.gz" "$DOWNLOAD_URL"; then
+        gunzip -f mihomo.gz 2>/dev/null || true
         # Find the mihomo binary
-        find . -name "mihomo*" -type f -executable | head -1 | while read f; do
+        find . -name "mihomo*" -type f | head -1 | while read f; do
             cp "$f" "$BIN_DIR/mihomo"
             chmod +x "$BIN_DIR/mihomo"
         done
         if [ -f "$BIN_DIR/mihomo" ]; then
-            info "mihomo 安装成功: $BIN_DIR/mihomo"
+            info "mihomo 安装成功: $BIN_DIR/mihomo ($(mihomo --version 2>/dev/null | head -1))"
         else
-            # Try without executable bit
-            find . -name "mihomo*" -type f | head -1 | while read f; do
-                cp "$f" "$BIN_DIR/mihomo"
-                chmod +x "$BIN_DIR/mihomo"
-            done
+            warn "mihomo 解压失败，请手动安装"
         fi
     else
-        warn "下载失败，请手动安装 mihomo"
+        warn "自动下载失败，请手动安装 mihomo"
+        warn "1. 在本地下载: https://github.com/MetaCubeX/mihomo/releases/tag/v${VERSION}"
+        warn "2. 选择 ${FILENAME}"
+        warn "3. 上传到服务器并解压至 /usr/local/bin/mihomo"
     fi
 
     cd /
@@ -148,10 +178,18 @@ install_python_deps() {
         info "创建 Python 虚拟环境"
     fi
 
-    # Install requirements
-    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q
-    "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q
-    info "Python 依赖安装完成"
+    # Install requirements (try mirrors if direct fails)
+    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q 2>/dev/null || \
+        "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q -i https://mirrors.aliyun.com/pypi/simple/ 2>/dev/null || true
+
+    if "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q 2>/dev/null; then
+        info "Python 依赖安装完成"
+    else
+        warn "使用阿里云镜像重试..."
+        "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q \
+            -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com || \
+        warn "pip 安装失败，请手动执行: pip install -r requirements.txt"
+    fi
 
     # Create symlink for vpn-manager command
     cat > "$BIN_DIR/vpn-manager" << 'EOF'
@@ -174,27 +212,28 @@ setup_workdir() {
     cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
     cp -r "$SCRIPT_DIR"/.[!.]* "$INSTALL_DIR/" 2>/dev/null || true
 
-    # Download GeoIP/GeoSite databases
+    # Download GeoIP/GeoSite databases (with mirror fallback)
     if [ ! -f "$WORK_DIR/geoip.dat" ]; then
+        step "下载 GeoIP/GeoSite 数据库"
         info "下载 GeoIP 数据库..."
-        curl -L -o "$WORK_DIR/geoip.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat" \
-            --connect-timeout 10 --max-time 60 2>/dev/null || \
-        wget -O "$WORK_DIR/geoip.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat" \
-            --timeout=10 2>/dev/null || \
-        warn "GeoIP 下载失败，可稍后手动下载"
+        if download_with_mirrors "$WORK_DIR/geoip.dat" \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"; then
+            info "GeoIP 数据库下载完成"
+        else
+            warn "GeoIP 下载失败，可稍后手动下载"
+            warn "下载后放置到: $WORK_DIR/geoip.dat"
+        fi
     fi
 
     if [ ! -f "$WORK_DIR/geosite.dat" ]; then
         info "下载 GeoSite 数据库..."
-        curl -L -o "$WORK_DIR/geosite.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat" \
-            --connect-timeout 10 --max-time 60 2>/dev/null || \
-        wget -O "$WORK_DIR/geosite.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat" \
-            --timeout=10 2>/dev/null || \
-        warn "GeoSite 下载失败，可稍后手动下载"
+        if download_with_mirrors "$WORK_DIR/geosite.dat" \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"; then
+            info "GeoSite 数据库下载完成"
+        else
+            warn "GeoSite 下载失败，可稍后手动下载"
+            warn "下载后放置到: $WORK_DIR/geosite.dat"
+        fi
     fi
 
     info "工作目录: $WORK_DIR"
