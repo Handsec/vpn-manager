@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENDOR_DIR="$SCRIPT_DIR/vendor"
 WORK_DIR="$SCRIPT_DIR/vendor/work"
 PROXY="${PROXY:-}"
+[ -n "$PROXY" ] && export http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY"
 
 mkdir -p "$VENDOR_DIR" "$WORK_DIR"
 

@@ -1,0 +1,12 @@
+# VPN Manager 代理配置
+#
+# 两种使用方式（二选一）:
+#
+# 方式 1（推荐）: 端口映射
+#   Windows 上手动映射代理端口到服务器:
+#     ssh -R 7890:localhost:7890 user@server
+#   install.sh 会自动检测 localhost 上的代理端口，无需此文件
+#
+# 方式 2: 直接指定代理地址
+#   复制本文件为 proxy.conf 并修改:
+PROXY=http://192.168.1.100:7890

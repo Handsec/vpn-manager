@@ -4,8 +4,8 @@
 # 支持离线安装（vendor/ 目录存在时自动走离线）
 # ============================================================
 # 用法:
-#   sudo bash install.sh                                          # 纯安装
-#   PROXY=http://127.0.0.1:7890 sudo bash install.sh              # 走代理下载
+#   sudo bash install.sh                                          # 自动检测本地代理端口
+#   PROXY=http://127.0.0.1:7890 sudo bash install.sh              # 临时指定代理
 #   SUBSCRIPTION_URL=https://xxx sudo bash install.sh              # 安装 + 自动导入订阅
 #   SUBSCRIPTION_URL=... AUTO_START=true sudo bash install.sh     # 安装 + 导入 + 启动引擎 + 设代理
 # ============================================================
@@ -17,9 +17,27 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
 step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
-PROXY="${PROXY:-}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 代理检测优先级: PROXY 环境变量 > proxy.conf > 本地端口扫描
+PROXY="${PROXY:-}"
+if [ -z "$PROXY" ] && [ -f "$SCRIPT_DIR/proxy.conf" ]; then
+    source "$SCRIPT_DIR/proxy.conf"
+    PROXY="${PROXY:-}"
+fi
+if [ -z "$PROXY" ]; then
+    for port in 7890 7891 1080 8080; do
+        if curl -s --connect-timeout 1 --max-time 2 --proxy "http://127.0.0.1:$port" \
+            -o /dev/null http://www.google.com &>/dev/null; then
+            PROXY="http://127.0.0.1:$port"
+            info "检测到本地代理: $PROXY"
+            break
+        fi
+    done
+fi
+
+[ -n "$PROXY" ] && export http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY"
+
 VENDOR_DIR="$SCRIPT_DIR/vendor"
 
 # 离线模式检测
@@ -294,6 +312,20 @@ main() {
     if [ "$(id -u)" -ne 0 ]; then
         error "请以 root 用户运行: sudo bash install.sh"
         exit 1
+    fi
+
+    # 自动下载依赖（vendor 不存在时）
+    if [ "$HAS_VENDOR" = "0" ]; then
+        step "自动下载依赖"
+        info "未检测到 vendor 目录，将自动下载所需依赖..."
+        if [ -f "$SCRIPT_DIR/download-deps.sh" ]; then
+            bash "$SCRIPT_DIR/download-deps.sh" || warn "自动下载未完全成功，将尝试在线安装"
+            # 重新检测 vendor
+            if [ -d "$VENDOR_DIR" ] && [ -f "$VENDOR_DIR/mihomo" ]; then
+                HAS_VENDOR=1
+                info "依赖下载完成，继续安装"
+            fi
+        fi
     fi
 
     install_system_deps
