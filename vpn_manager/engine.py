@@ -100,7 +100,7 @@ class EngineManager:
             {
                 "name": "PROXY",
                 "type": "select",
-                "proxies": ["AUTO", "DIRECT", *proxy_names[:5]],
+                "proxies": ["AUTO", "DIRECT", *proxy_names],
             },
             {
                 "name": "AUTO",
