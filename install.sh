@@ -20,6 +20,10 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
 step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
+# 代理设置: 可设环境变量 PROXY=http://127.0.0.1:17890
+# 或通过 --proxy 参数传入，仅用于 GitHub 下载，不影响 apt
+PROXY="${PROXY:-}"
+
 # Try multiple mirror URLs for GitHub resources (China-friendly)
 download_with_mirrors() {
     local output="$1"
@@ -40,7 +44,9 @@ download_with_mirrors() {
         for try_url in "$jsdelivr_url" "$mirror_url" "$url"; do
             [ -z "$try_url" ] && continue
             info "尝试: $try_url"
-            if curl -L --connect-timeout 5 --max-time 30 -o "$output" "$try_url" 2>/dev/null; then
+            local curl_cmd="curl -L --connect-timeout 5 --max-time 30"
+            [ -n "$PROXY" ] && curl_cmd="$curl_cmd --proxy $PROXY"
+            if $curl_cmd -o "$output" "$try_url" 2>/dev/null; then
                 if [ -s "$output" ]; then
                     info "下载成功"
                     return 0
@@ -51,7 +57,12 @@ download_with_mirrors() {
     return 1
 }
 
+# 代理设置: 可设环境变量 PROXY=http://127.0.0.1:17890
+# 或通过 --proxy 参数传入，仅用于 GitHub 下载，不影响 apt
+PROXY="${PROXY:-}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENDOR_DIR="$SCRIPT_DIR/vendor"
 INSTALL_DIR="/opt/vpn-manager"
 WORK_DIR="/etc/vpn-manager"
 BIN_DIR="/usr/local/bin"
@@ -115,21 +126,26 @@ install_mihomo() {
         return 0
     fi
 
+    # 优先使用本地 vendor 目录中的文件
+    if [ -f "$VENDOR_DIR/mihomo" ]; then
+        info "从本地 vendor 安装..."
+        cp "$VENDOR_DIR/mihomo" "$BIN_DIR/mihomo"
+        chmod +x "$BIN_DIR/mihomo"
+        if [ -f "$BIN_DIR/mihomo" ]; then
+            info "mihomo 安装成功: $BIN_DIR/mihomo"
+            return 0
+        fi
+    fi
+
     # Try to detect latest version via proxy-friendly API
     info "获取最新版本信息..."
     VERSION_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-    VERSION=$(curl -s --connect-timeout 5 --max-time 10 "$VERSION_URL" 2>/dev/null \
+    API_CURL="curl -s --connect-timeout 5 --max-time 10"
+    [ -n "$PROXY" ] && API_CURL="$API_CURL --proxy $PROXY"
+    VERSION=$($API_CURL "$VERSION_URL" 2>/dev/null \
         | grep '"tag_name"' \
         | cut -d '"' -f 4 \
         | sed 's/^v//')
-
-    if [ -z "$VERSION" ]; then
-        # Try ghproxy
-        VERSION=$(curl -s --connect-timeout 5 --max-time 10 "https://ghproxy.com/$VERSION_URL" 2>/dev/null \
-            | grep '"tag_name"' \
-            | cut -d '"' -f 4 \
-            | sed 's/^v//')
-    fi
 
     if [ -z "$VERSION" ]; then
         warn "无法获取最新版本号，使用默认版本 v1.19.27"
@@ -145,7 +161,6 @@ install_mihomo() {
 
     if download_with_mirrors "mihomo.gz" "$DOWNLOAD_URL"; then
         gunzip -f mihomo.gz 2>/dev/null || true
-        # Find the mihomo binary
         find . -name "mihomo*" -type f | head -1 | while read f; do
             cp "$f" "$BIN_DIR/mihomo"
             chmod +x "$BIN_DIR/mihomo"
@@ -156,10 +171,11 @@ install_mihomo() {
             warn "mihomo 解压失败，请手动安装"
         fi
     else
-        warn "自动下载失败，请手动安装 mihomo"
-        warn "1. 在本地下载: https://github.com/MetaCubeX/mihomo/releases/tag/v${VERSION}"
+        warn "网络下载失败，请按以下步骤手动安装:"
+        warn "1. 本地下载: https://github.com/MetaCubeX/mihomo/releases/tag/v${VERSION}"
         warn "2. 选择 ${FILENAME}"
-        warn "3. 上传到服务器并解压至 /usr/local/bin/mihomo"
+        warn "3. 上传到服务器后: gunzip ${FILENAME} && chmod +x mihomo-linux-*-v* && mv mihomo-linux-*-v* /usr/local/bin/mihomo"
+        warn "4. 或本地运行 bash download-deps.sh 打包所有依赖"
     fi
 
     cd /
@@ -178,9 +194,14 @@ install_python_deps() {
         info "创建 Python 虚拟环境"
     fi
 
-    # Install requirements (try mirrors if direct fails)
-    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q 2>/dev/null || \
-        "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q -i https://mirrors.aliyun.com/pypi/simple/ 2>/dev/null || true
+    # Install requirements (优先本地 wheels，再试网络)
+    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q 2>/dev/null || true
+
+    if [ -d "$VENDOR_DIR/wheels" ] && ls "$VENDOR_DIR/wheels/"*.whl &>/dev/null 2>&1; then
+        info "从本地 vendor/wheels 安装 Python 依赖..."
+        "$INSTALL_DIR/venv/bin/pip" install --no-index --find-links "$VENDOR_DIR/wheels" -r requirements.txt -q && \
+            info "Python 依赖安装完成" && return 0
+    fi
 
     if "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q 2>/dev/null; then
         info "Python 依赖安装完成"
@@ -214,25 +235,36 @@ setup_workdir() {
 
     # Download GeoIP/GeoSite databases (with mirror fallback)
     if [ ! -f "$WORK_DIR/geoip.dat" ]; then
-        step "下载 GeoIP/GeoSite 数据库"
-        info "下载 GeoIP 数据库..."
-        if download_with_mirrors "$WORK_DIR/geoip.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"; then
-            info "GeoIP 数据库下载完成"
+        # 优先使用本地 vendor 文件
+        if [ -f "$VENDOR_DIR/geoip.dat" ]; then
+            cp "$VENDOR_DIR/geoip.dat" "$WORK_DIR/geoip.dat"
+            info "从本地 vendor 安装 GeoIP 数据库"
         else
-            warn "GeoIP 下载失败，可稍后手动下载"
-            warn "下载后放置到: $WORK_DIR/geoip.dat"
+            info "下载 GeoIP 数据库..."
+            if download_with_mirrors "$WORK_DIR/geoip.dat" \
+                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"; then
+                info "GeoIP 数据库下载完成"
+            else
+                warn "GeoIP 下载失败，可稍后手动下载"
+                warn "下载后放置到: $WORK_DIR/geoip.dat"
+            fi
         fi
     fi
 
     if [ ! -f "$WORK_DIR/geosite.dat" ]; then
-        info "下载 GeoSite 数据库..."
-        if download_with_mirrors "$WORK_DIR/geosite.dat" \
-            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"; then
-            info "GeoSite 数据库下载完成"
+        # 优先使用本地 vendor 文件
+        if [ -f "$VENDOR_DIR/geosite.dat" ]; then
+            cp "$VENDOR_DIR/geosite.dat" "$WORK_DIR/geosite.dat"
+            info "从本地 vendor 安装 GeoSite 数据库"
         else
-            warn "GeoSite 下载失败，可稍后手动下载"
-            warn "下载后放置到: $WORK_DIR/geosite.dat"
+            info "下载 GeoSite 数据库..."
+            if download_with_mirrors "$WORK_DIR/geosite.dat" \
+                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"; then
+                info "GeoSite 数据库下载完成"
+            else
+                warn "GeoSite 下载失败，可稍后手动下载"
+                warn "下载后放置到: $WORK_DIR/geosite.dat"
+            fi
         fi
     fi
 

@@ -9,3 +9,4 @@ venv/
 config.yaml
 *.pid
 .env
+vendor/
