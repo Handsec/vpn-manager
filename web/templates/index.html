@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPN Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #0f1923;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a3a4e;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header h1 { font-size: 22px; color: #00d4ff; display: flex; align-items: center; gap: 10px; }
+        .header .subtitle { color: #8899aa; font-size: 13px; }
+        .status-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .status-badge.running { background: #1a4a2e; color: #4ade80; border: 1px solid #4ade80; }
+        .status-badge.stopped { background: #4a1a1a; color: #f87171; border: 1px solid #f87171; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+        .card {
+            background: #1a2332;
+            border-radius: 12px;
+            border: 1px solid #2a3a4e;
+            overflow: hidden;
+        }
+        .card-header {
+            padding: 15px 20px;
+            background: #1e2a3a;
+            border-bottom: 1px solid #2a3a4e;
+            font-weight: 600;
+            font-size: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card-body { padding: 20px; }
+        .mode-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+        .mode-btn {
+            flex: 1;
+            padding: 10px 16px;
+            border: 2px solid #2a3a4e;
+            border-radius: 8px;
+            background: transparent;
+            color: #8899aa;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+            text-align: center;
+            min-width: 100px;
+        }
+        .mode-btn:hover { border-color: #00d4ff; color: #00d4ff; }
+        .mode-btn.active {
+            border-color: #00d4ff;
+            background: #003d5a;
+            color: #00d4ff;
+        }
+        .mode-btn.direct.active {
+            border-color: #f59e0b;
+            background: #3a2e0a;
+            color: #f59e0b;
+        }
+        .engine-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .engine-btn.start { background: #1a6b3c; color: white; }
+        .engine-btn.start:hover { background: #218c4e; }
+        .engine-btn.stop { background: #6b1a1a; color: white; }
+        .engine-btn.stop:hover { background: #8c2121; }
+        .engine-btn.restart { background: #6b4a1a; color: white; }
+        .engine-btn.restart:hover { background: #8c6321; }
+        .engine-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+        .subscription-item {
+            padding: 12px;
+            margin-bottom: 10px;
+            background: #0f1923;
+            border-radius: 8px;
+            border: 1px solid #2a3a4e;
+        }
+        .subscription-item .name { font-weight: 600; color: #00d4ff; }
+        .subscription-item .meta { font-size: 12px; color: #667788; margin-top: 4px; }
+        .delete-btn {
+            float: right;
+            background: none;
+            border: 1px solid #6b1a1a;
+            color: #f87171;
+            padding: 3px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .delete-btn:hover { background: #6b1a1a; color: white; }
+        .proxy-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .proxy-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 10px;
+            border-bottom: 1px solid #1e2a3a;
+            font-size: 13px;
+        }
+        .proxy-item .tag {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #2a3a4e;
+        }
+        .proxy-item .tag.ss { background: #1a4a2e; color: #4ade80; }
+        .proxy-item .tag.ssr { background: #4a2e1a; color: #f59e0b; }
+        .proxy-item .tag.vmess { background: #1a2e4a; color: #60a5fa; }
+        .proxy-item .tag.trojan { background: #4a1a3a; color: #f472b6; }
+        .proxy-item .tag.vless { background: #2e1a4a; color: #a78bfa; }
+        .input-group {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .input-group input {
+            flex: 1;
+            padding: 10px 14px;
+            background: #0f1923;
+            border: 1px solid #2a3a4e;
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-size: 13px;
+        }
+        .input-group input:focus { outline: none; border-color: #00d4ff; }
+        .btn {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        .btn.primary { background: #0077be; color: white; }
+        .btn.primary:hover { background: #0095e8; }
+        .btn.secondary { background: #2a3a4e; color: #e0e0e0; }
+        .btn.secondary:hover { background: #3a4a5e; }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 14px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+        }
+        .toast.success { background: #1a4a2e; color: #4ade80; border: 1px solid #4ade80; }
+        .toast.error { background: #4a1a1a; color: #f87171; border: 1px solid #f87171; }
+        .toast.info { background: #1a2e4a; color: #60a5fa; border: 1px solid #60a5fa; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .text-muted { color: #667788; }
+        .text-center { text-align: center; }
+        .mt-10 { margin-top: 10px; }
+        .mb-10 { margin-bottom: 10px; }
+        .flex { display: flex; }
+        .gap-8 { gap: 8px; }
+        textarea {
+            width: 100%;
+            padding: 10px 14px;
+            background: #0f1923;
+            border: 1px solid #2a3a4e;
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-size: 13px;
+            resize: vertical;
+            min-height: 80px;
+            font-family: monospace;
+        }
+        textarea:focus { outline: none; border-color: #00d4ff; }
+        .tab-bar { display: flex; gap: 0; margin-bottom: 15px; border-bottom: 1px solid #2a3a4e; }
+        .tab { padding: 10px 20px; cursor: pointer; color: #667788; border-bottom: 2px solid transparent; font-size: 13px; font-weight: 600; transition: all 0.2s; }
+        .tab:hover { color: #00d4ff; }
+        .tab.active { color: #00d4ff; border-bottom-color: #00d4ff; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .header { flex-direction: column; text-align: center; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🛡 VPN Manager</h1>
+            <div class="subtitle">基于 Clash Meta (mihomo) 的代理管理工具</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;">
+            <span class="status-badge {{ status }}" id="statusBadge">{{ "● 运行中" if status == "running" else "● 已停止" }}</span>
+            <span class="text-muted" style="font-size:13px;">{{ version }}</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="grid">
+            <!-- 引擎控制 -->
+            <div class="card">
+                <div class="card-header">⚙️ 引擎控制</div>
+                <div class="card-body">
+                    <div class="engine-controls mb-10">
+                        <button class="engine-btn start" onclick="engineAction('start')">▶ 启动</button>
+                        <button class="engine-btn stop" onclick="engineAction('stop')">⏹ 停止</button>
+                        <button class="engine-btn restart" onclick="engineAction('restart')">🔄 重启</button>
+                    </div>
+                    <div class="mt-10">
+                        <label class="text-muted" style="font-size:12px;">混合端口: {{ config.server.mixed_port }} | API端口: {{ config.server.api_port }}</label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 模式切换 -->
+            <div class="card">
+                <div class="card-header">🔀 代理模式</div>
+                <div class="card-body">
+                    <div class="mode-buttons">
+                        <button class="mode-btn {{ 'active' if mode == 'rule' else '' }}"
+                                onclick="switchMode('rule')">📋 规则模式</button>
+                        <button class="mode-btn {{ 'active' if mode == 'global' else '' }}"
+                                onclick="switchMode('global')">🌐 全局模式</button>
+                        <button class="mode-btn direct {{ 'active' if mode == 'direct' else '' }}"
+                                onclick="switchMode('direct')">🔓 直连模式</button>
+                    </div>
+                    <div class="mt-10 text-muted" style="font-size:12px;">
+                        规则模式: 国内流量直连，国外流量代理<br>
+                        全局模式: 所有流量都通过代理<br>
+                        直连模式: 所有流量都不走代理
+                    </div>
+                </div>
+            </div>
+
+            <!-- 订阅管理 -->
+            <div class="card">
+                <div class="card-header">📥 订阅管理</div>
+                <div class="card-body">
+                    <div class="tab-bar">
+                        <div class="tab active" onclick="switchTab('url', this)">URL导入</div>
+                        <div class="tab" onclick="switchTab('text', this)">手动导入</div>
+                        <div class="tab" onclick="switchTab('list', this)">订阅列表</div>
+                    </div>
+
+                    <div id="tab-url" class="tab-content active">
+                        <div class="input-group">
+                            <input type="text" id="subUrl" placeholder="订阅链接 (URL)">
+                            <input type="text" id="subName1" placeholder="名称 (可选)" style="max-width:120px;">
+                        </div>
+                        <button class="btn primary" onclick="importUrl()">导入订阅</button>
+                    </div>
+
+                    <div id="tab-text" class="tab-content">
+                        <textarea id="subText" placeholder="粘贴订阅内容 (Base64 / Clash YAML / URI列表)"></textarea>
+                        <div class="input-group mt-10">
+                            <input type="text" id="subName2" placeholder="名称 (可选)">
+                        </div>
+                        <button class="btn primary" onclick="importText()">导入</button>
+                    </div>
+
+                    <div id="tab-list" class="tab-content">
+                        {% set subs = config.subscriptions.items() %}
+                        {% if subs %}
+                            {% for name, sub in subs %}
+                            <div class="subscription-item">
+                                <button class="delete-btn" onclick="deleteSub('{{ name }}')">删除</button>
+                                <div class="name">{{ name }}</div>
+                                <div class="meta">
+                                    节点: {{ sub.proxies|length }} |
+                                    {% if sub.url %}订阅源{% else %}手动导入{% endif %} |
+                                    {{ sub.updated_at[:19] if sub.updated_at else "未知" }}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="text-center text-muted" style="padding:20px;">
+                                暂无订阅，请通过 URL 或手动方式导入
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- 代理节点列表 -->
+            <div class="card">
+                <div class="card-header">📡 节点列表 <span class="text-muted" style="font-size:12px;">({{ proxies|length }} 个节点)</span></div>
+                <div class="card-body proxy-list">
+                    {% if proxies %}
+                        {% for p in proxies %}
+                        <div class="proxy-item">
+                            <span>{{ p.name }}</span>
+                            <span class="tag {{ p.type }}">{{ p.type|upper }}</span>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="text-center text-muted" style="padding:20px;">
+                            暂无节点，请先导入订阅
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function api(path, opts = {}) {
+            try {
+                const resp = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    ...opts
+                });
+                return await resp.json();
+            } catch(e) {
+                showToast('请求失败: ' + e.message, 'error');
+                return null;
+            }
+        }
+
+        function showToast(msg, type = 'info') {
+            const t = document.createElement('div');
+            t.className = 'toast ' + type;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 4000);
+        }
+
+        async function engineAction(action) {
+            const result = await api('/api/engine/' + action);
+            if (result) {
+                showToast(result.message || action + ' 成功', result.success ? 'success' : 'error');
+                setTimeout(() => location.reload(), 1500);
+            }
+        }
+
+        async function switchMode(mode) {
+            const result = await api('/api/mode', { body: JSON.stringify({ mode }) });
+            if (result) {
+                showToast(result.message || '模式已切换', 'success');
+                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll(`.mode-btn[onclick*="'${mode}'"]`).forEach(b => b.classList.add('active'));
+            }
+        }
+
+        async function importUrl() {
+            const url = document.getElementById('subUrl').value.trim();
+            const name = document.getElementById('subName1').value.trim();
+            if (!url) { showToast('请输入订阅链接', 'error'); return; }
+            const result = await api('/api/subscriptions/import-url', {
+                body: JSON.stringify({ url, name })
+            });
+            if (result && result.success) {
+                showToast(`导入成功: ${result.name} (${result.count} 个节点)`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else if (result) {
+                showToast(result.detail || '导入失败', 'error');
+            }
+        }
+
+        async function importText() {
+            const text = document.getElementById('subText').value.trim();
+            const name = document.getElementById('subName2').value.trim();
+            if (!text) { showToast('请输入订阅内容', 'error'); return; }
+            const result = await api('/api/subscriptions/import-text', {
+                body: JSON.stringify({ text, name })
+            });
+            if (result && result.success) {
+                showToast(`导入成功: ${result.name} (${result.count} 个节点)`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else if (result) {
+                showToast(result.detail || '导入失败', 'error');
+            }
+        }
+
+        async function deleteSub(name) {
+            if (!confirm(`确定删除订阅 "${name}" 吗？`)) return;
+            const result = await api('/api/subscriptions/delete/' + encodeURIComponent(name));
+            if (result && result.success) {
+                showToast('已删除: ' + name, 'success');
+                setTimeout(() => location.reload(), 800);
+            }
+        }
+
+        function switchTab(tabId, el) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + tabId).classList.add('active');
+            el.classList.add('active');
+        }
+    </script>
+</body>
+</html>
