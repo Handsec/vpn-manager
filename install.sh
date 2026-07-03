@@ -4,8 +4,10 @@
 # 支持离线安装（vendor/ 目录存在时自动走离线）
 # ============================================================
 # 用法:
-#   sudo bash install.sh                    # 正常安装
-#   PROXY=http://127.0.0.1:7890 sudo bash install.sh  # 走代理下载
+#   sudo bash install.sh                                          # 纯安装
+#   PROXY=http://127.0.0.1:7890 sudo bash install.sh              # 走代理下载
+#   SUBSCRIPTION_URL=https://xxx sudo bash install.sh              # 安装 + 自动导入订阅
+#   SUBSCRIPTION_URL=... AUTO_START=true sudo bash install.sh     # 安装 + 导入 + 启动引擎 + 设代理
 # ============================================================
 set -e
 
@@ -205,6 +207,62 @@ SERVICE
     info "服务已创建: systemctl start vpn-manager"
 }
 
+auto_setup_proxy() {
+    [ -z "$SUBSCRIPTION_URL" ] && return 0
+
+    step "自动配置代理"
+    info "检测到 SUBSCRIPTION_URL，开始自动化配置..."
+
+    # 1. 导入订阅
+    echo ""
+    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py import url "$SUBSCRIPTION_URL" --name "自动导入"
+    IMPORT_EXIT=$?
+
+    if [ "$IMPORT_EXIT" -ne 0 ]; then
+        warn "订阅导入失败，跳过后续自动化步骤"
+        warn "可手动执行: vpn-manager import url <订阅链接>"
+        return 0
+    fi
+
+    # 2. 如果 AUTO_START=true，启动引擎并配置系统代理
+    if [ "${AUTO_START:-false}" = "true" ]; then
+        echo ""
+        info "启动 mihomo 引擎..."
+        /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py start
+
+        echo ""
+        info "设置系统代理环境变量..."
+        cat > /etc/profile.d/proxy.sh << 'PROXY_EOF'
+export ALL_PROXY=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+PROXY_EOF
+        chmod +x /etc/profile.d/proxy.sh
+        # 同时追加到 ~/.bashrc
+        grep -q "proxy.sh" /root/.bashrc 2>/dev/null || echo 'source /etc/profile.d/proxy.sh' >> /root/.bashrc
+        source /etc/profile.d/proxy.sh
+
+        info "自动化配置完成！"
+        echo ""
+        echo -e "${GREEN}  现在可以测试:${NC}"
+        echo "    curl -s -o /dev/null -w '%{http_code}' https://www.google.com"
+        echo ""
+        echo "  或重新登录后直接访问:"
+        echo "    curl https://www.google.com"
+    else
+        info "订阅已导入。"
+        echo ""
+        echo "  下一步:"
+        echo "    1. vpn-manager start              # 启动引擎"
+        echo "    2. vpn-manager select              # 选择节点（交互式）"
+        echo "    3. 参考 README 设置系统代理环境变量"
+        echo ""
+        echo "  如果用 AUTO_START=true 可一键全部完成:"
+        echo "    SUBSCRIPTION_URL=https://xxx AUTO_START=true sudo bash install.sh"
+    fi
+}
+
 show_summary() {
     echo ""
     echo -e "${GREEN}============================================${NC}"
@@ -243,6 +301,7 @@ main() {
     install_python_deps
     setup_workdir
     setup_service
+    auto_setup_proxy
     show_summary
 }
 
