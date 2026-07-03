@@ -78,7 +78,7 @@ class EngineManager:
 
         if mode == ProxyMode.DIRECT:
             config["mode"] = "direct"
-            config["rules"] = [{"MATCH": "DIRECT"}]
+            config["rules"] = ["MATCH,DIRECT"]
             config["proxy-groups"] = []
             return config
 
@@ -91,7 +91,7 @@ class EngineManager:
                     "proxies": proxy_names if proxy_names else ["DIRECT"],
                 },
             ]
-            config["rules"] = [{"MATCH": "PROXY"}]
+            config["rules"] = ["MATCH,PROXY"]
             return config
 
         # Rule mode
@@ -113,15 +113,15 @@ class EngineManager:
         ]
 
         config["rules"] = [
-            {"GEOSITE": "category-ads", "policy": "REJECT"},
-            {"GEOSITE": "private", "policy": "DIRECT"},
-            {"GEOSITE": "microsoft@cn", "policy": "DIRECT"},
-            {"GEOSITE": "apple-cn", "policy": "DIRECT"},
-            {"GEOSITE": "google-cn", "policy": "DIRECT"},
-            {"GEOSITE": "category-games@cn", "policy": "DIRECT"},
-            {"GEOSITE": "cn", "policy": "DIRECT"},
-            {"GEOIP": "CN", "policy": "DIRECT"},
-            {"MATCH": "PROXY"},
+            "GEOSITE,category-ads,REJECT",
+            "GEOSITE,private,DIRECT",
+            "GEOSITE,microsoft@cn,DIRECT",
+            "GEOSITE,apple-cn,DIRECT",
+            "GEOSITE,google-cn,DIRECT",
+            "GEOSITE,category-games@cn,DIRECT",
+            "GEOSITE,cn,DIRECT",
+            "GEOIP,CN,DIRECT",
+            "MATCH,PROXY",
         ]
 
         return config
@@ -166,6 +166,14 @@ class EngineManager:
                 return EngineStatus.RUNNING
             except (ValueError, OSError, ProcessLookupError):
                 pid_file.unlink(missing_ok=True)
+        # Check via API (handles systemd-managed mihomo)
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{self.cfg.config.server.api_port}", timeout=2) as client:
+                resp = client.get("/version")
+                if resp.status_code == 200:
+                    return EngineStatus.RUNNING
+        except Exception:
+            pass
         return EngineStatus.STOPPED
 
     def start(self, mode: Optional[ProxyMode] = None) -> str:
@@ -276,6 +284,20 @@ class EngineManager:
         except Exception as e:
             return f"配置重载失败: {e}"
 
+    def select_proxy(self, group_name: str, proxy_name: str) -> str:
+        """Select a proxy node for a proxy group via mihomo API."""
+        server = self.cfg.config.server
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{server.api_port}", timeout=5) as client:
+                resp = client.put(f"/proxies/{group_name}", json={"name": proxy_name})
+                if resp.status_code in (200, 201, 204):
+                    return f"✓ 已选择节点 [{proxy_name}] → 组 [{group_name}]"
+                return f"选择失败: HTTP {resp.status_code}"
+        except httpx.ConnectError:
+            return "无法连接到 mihomo API (引擎可能未运行)"
+        except Exception as e:
+            return f"选择失败: {e}"
+
     def get_proxies(self) -> dict:
         """Get current proxy information from mihomo API."""
         server = self.cfg.config.server
@@ -317,7 +339,7 @@ class EngineManager:
         if not bin_path:
             return "未知 (未安装)"
         try:
-            result = subprocess.run([bin_path, "--version"], capture_output=True, text=True, timeout=5)
+            result = subprocess.run([bin_path, "-v"], capture_output=True, text=True, timeout=5)
             return result.stdout.strip() or result.stderr.strip() or "未知"
         except Exception:
             return "未知"

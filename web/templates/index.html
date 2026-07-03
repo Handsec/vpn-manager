@@ -136,6 +136,19 @@
         .proxy-item .tag.vmess { background: #1a2e4a; color: #60a5fa; }
         .proxy-item .tag.trojan { background: #4a1a3a; color: #f472b6; }
         .proxy-item .tag.vless { background: #2e1a4a; color: #a78bfa; }
+        .proxy-select-btn {
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid #2a3a4e;
+            background: #1e2a3a;
+            color: #c0d0e0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .proxy-select-btn:hover { background: #2a4a6a; border-color: #4a8aba; }
+        .proxy-select-btn.active { background: #1a4a2e; border-color: #4ade80; color: #4ade80; }
         .input-group {
             display: flex;
             gap: 8px;
@@ -307,13 +320,45 @@
                 </div>
             </div>
 
+            <!-- 代理组状态 -->
+            {% if proxy_groups %}
+            <div class="card">
+                <div class="card-header">🎯 代理组</div>
+                <div class="card-body">
+                    {% for name, group in proxy_groups.items() %}
+                    <div class="proxy-group" style="margin-bottom: 15px; {% if not loop.last %}border-bottom:1px solid #2a3a4e; padding-bottom:15px;{% endif %}">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <strong>{{ name }}</strong>
+                            <span class="tag" style="font-size:11px;">{{ group.type }}</span>
+                        </div>
+                        <div style="font-size:13px; color:#88aacc; margin-bottom:8px;">
+                            当前: <span id="current-{{ name }}" style="color:#4ade80; font-weight:600;">{{ group.now }}</span>
+                        </div>
+                        <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                            {% for p in group.all %}
+                            <button class="proxy-select-btn"
+                                    data-group="{{ name }}"
+                                    data-proxy="{{ p }}"
+                                    onclick="selectProxy(this)">
+                                {{ p }}
+                            </button>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
             <!-- 代理节点列表 -->
             <div class="card">
                 <div class="card-header">📡 节点列表 <span class="text-muted" style="font-size:12px;">({{ proxies|length }} 个节点)</span></div>
                 <div class="card-body proxy-list">
                     {% if proxies %}
                         {% for p in proxies %}
-                        <div class="proxy-item">
+                        <div class="proxy-item" style="cursor:pointer;" title="点击选择此节点"
+                             onclick="selectProxyFromList(this)"
+                             data-proxy="{{ p.name }}">
                             <span>{{ p.name }}</span>
                             <span class="tag {{ p.type }}">{{ p.type|upper }}</span>
                         </div>
@@ -405,6 +450,34 @@
                 showToast('已删除: ' + name, 'success');
                 setTimeout(() => location.reload(), 800);
             }
+        }
+
+        async function selectProxy(btn) {
+            const group = btn.dataset.group;
+            const proxy = btn.dataset.proxy;
+            const result = await api(`/api/proxies/${encodeURIComponent(group)}/select`, {
+                body: JSON.stringify({ proxy_name: proxy })
+            });
+            if (result) {
+                showToast(result.message || `已选择 ${proxy}`, result.success ? 'success' : 'error');
+                if (result.success) {
+                    document.querySelectorAll(`.proxy-select-btn[data-group="${group}"]`).forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('current-' + group).textContent = proxy;
+                }
+            }
+        }
+
+        async function selectProxyFromList(el) {
+            const proxy = el.dataset.proxy;
+            const buttons = document.querySelectorAll('.proxy-select-btn');
+            for (const btn of buttons) {
+                if (btn.dataset.proxy === proxy) {
+                    selectProxy(btn);
+                    return;
+                }
+            }
+            showToast('该节点不在当前代理组列表中', 'error');
         }
 
         function switchTab(tabId, el) {

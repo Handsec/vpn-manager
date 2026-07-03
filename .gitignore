@@ -10,3 +10,7 @@ config.yaml
 *.pid
 .env
 vendor/
+*.tar.gz
+*.zip
+*.log
+tmp/

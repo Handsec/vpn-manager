@@ -25,6 +25,11 @@ class ModeSwitchRequest(BaseModel):
     mode: str
 
 
+class ProxySelectRequest(BaseModel):
+    group_name: str = ""
+    proxy_name: str
+
+
 def create_app(config: ConfigManager, engine: EngineManager) -> FastAPI:
     app = FastAPI(title="VPN Manager", version="1.0.0")
 
@@ -113,6 +118,12 @@ def create_app(config: ConfigManager, engine: EngineManager) -> FastAPI:
             raise HTTPException(400, f"无效模式: {req.mode}，可选: global, rule, direct")
         msg = engine.switch_mode(mode)
         return {"success": True, "mode": mode.value, "message": msg}
+
+    @router.post("/api/proxies/{group_name}/select")
+    async def api_select_proxy(group_name: str, req: ProxySelectRequest):
+        msg = engine.select_proxy(group_name, req.proxy_name)
+        success = "已选择" in msg
+        return {"success": success, "message": msg}
 
     @router.post("/api/engine/start")
     async def api_start():

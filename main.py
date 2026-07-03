@@ -9,6 +9,7 @@ Usage:
   python3 main.py restart              # Restart mihomo engine
   python3 main.py status               # Show engine status
   python3 main.py mode [global|rule|direct]  # Switch proxy mode
+  python3 main.py select [name]        # Select proxy node (interactive if no name)
   python3 main.py import url <URL> [--name NAME]   # Import subscription from URL
   python3 main.py import text <CONTENT> [--name NAME]  # Import subscription from text
   python3 main.py list                 # List subscriptions and proxies
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -111,6 +113,72 @@ def mode(mode):
     pm = ProxyMode(mode)
     result = eng.switch_mode(pm)
     click.echo(result)
+
+
+@cli.command()
+@click.argument("proxy_name", required=False)
+@click.option("--group", default="PROXY", help="代理组名称 (默认: PROXY)")
+def select(proxy_name, group):
+    """选择代理节点（不带参数时进入交互式选择）"""
+    if not proxy_name:
+        _interactive_select(group)
+        return
+    result = eng.select_proxy(group, proxy_name)
+    click.echo(result)
+
+
+def _interactive_select(default_group="PROXY"):
+    """Interactive proxy selection with arrow keys."""
+    from pick import pick
+
+    # Check engine status
+    status = eng.get_status()
+    if status.value != "running":
+        click.echo("引擎未运行，请先启动: vpn-manager start")
+        return
+
+    # Get proxy groups from mihomo API
+    proxies_data = eng.get_proxies()
+    groups = {}
+    for name, info in proxies_data.items():
+        if info.get("type") in ("Selector", "URLTest", "Fallback"):
+            groups[name] = {
+                "type": info.get("type"),
+                "now": info.get("now", ""),
+                "all": info.get("all", []),
+            }
+
+    if not groups:
+        click.echo("未获取到代理组信息")
+        return
+
+    # If multiple groups, let user pick group first
+    group_names = list(groups.keys())
+    target_group = default_group if default_group in group_names else group_names[0]
+    if len(group_names) > 1:
+        opts = [f"{g}  (当前: {groups[g]['now']})" for g in group_names]
+        selected, idx = pick(opts, "选择代理组 (↑↓ 键移动, Enter 确认):")
+        target_group = group_names[idx]
+    else:
+        target_group = group_names[0]
+
+    # Show current selection and let user pick a proxy
+    g = groups[target_group]
+    if not g["all"]:
+        click.echo(f"代理组 [{target_group}] 中无可用节点")
+        return
+
+    now = g["now"]
+    opts = []
+    for p in g["all"]:
+        prefix = "● " if p == now else "  "
+        opts.append(f"{prefix}{p}")
+
+    selected, idx = pick(opts, f"代理组 [{target_group}] — 选择节点 (↑↓ 键移动, Enter 确认):")
+    proxy_name = selected.replace("● ", "").replace("  ", "").strip()
+
+    result = eng.select_proxy(target_group, proxy_name)
+    click.echo(f"\n{result}")
 
 
 @cli.command()
@@ -218,7 +286,7 @@ def update():
 
 @cli.command()
 def install():
-    """安装 mihomo 及依赖"""
+    """安装 mihomo 及依赖（支持离线模式）"""
     click.echo("开始安装 VPN Manager 依赖...")
 
     # Detect architecture
@@ -229,20 +297,52 @@ def install():
         "armv7l": "armv7",
     }
     arch = arch_map.get(platform.machine(), platform.machine())
-
     click.echo(f"系统架构: {arch}")
+
+    base_dir = Path(__file__).parent
+    vendor_dir = base_dir / "vendor"
+
+    # 检测 vendor 离线包
+    has_vendor = vendor_dir.is_dir() and (vendor_dir / "mihomo").is_file()
+    if has_vendor:
+        click.echo("检测到 vendor 目录，将使用离线安装模式")
 
     # Install Python dependencies
     click.echo("\n1. 安装 Python 依赖...")
-    req_file = Path(__file__).parent / "requirements.txt"
-    os.system(f"{sys.executable} -m pip install -r {req_file}")
+    req_file = base_dir / "requirements.txt"
+
+    # 离线安装：从 vendor/wheels 安装
+    wheels_dir = vendor_dir / "wheels"
+    if has_vendor and wheels_dir.is_dir() and list(wheels_dir.glob("*.whl")):
+        click.echo("  从 vendor/wheels 离线安装...")
+        ret = os.system(
+            f"{sys.executable} -m pip install --no-index --find-links "
+            f'"{wheels_dir}" -r "{req_file}" -q'
+        )
+        if ret == 0:
+            click.echo("  ✓ Python 依赖安装完成 (离线)")
+        else:
+            click.echo("  ✗ 离线安装失败，尝试在线安装...")
+            ret = os.system(f"{sys.executable} -m pip install -r {req_file}")
+    else:
+        # 在线安装
+        ret = os.system(f"{sys.executable} -m pip install -r {req_file}")
 
     # Check if mihomo exists
     bin_path = cfg.config.mihomo_bin_path
     if os.path.isfile(bin_path) and os.access(bin_path, os.X_OK):
         click.echo(f"mihomo 已存在: {bin_path}")
+    elif has_vendor:
+        click.echo("\n2. 安装 mihomo (离线)...")
+        mihomo_src = vendor_dir / "mihomo"
+        if mihomo_src.is_file():
+            shutil.copy2(str(mihomo_src), bin_path)
+            os.chmod(bin_path, 0o755)
+            click.echo(f"  ✓ mihomo 已安装到 {bin_path}")
+        else:
+            click.echo("  ✗ vendor/mihomo 不存在，请运行 download-deps.sh 重新打包")
     else:
-        click.echo(f"\n2. 下载 mihomo (Clash Meta)...")
+        click.echo("\n2. 下载 mihomo (Clash Meta)...")
         click.echo("   请手动下载安装，或运行安装脚本: install.sh")
         click.echo("   下载地址: https://github.com/MetaCubeX/mihomo/releases")
 
@@ -251,39 +351,54 @@ def install():
     work_dir = Path(cfg.config.working_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download GeoIP and GeoSite databases (with mirrors)
+    # GeoIP database
     geo_dir = work_dir
-    click.echo("\n4. 下载 GeoIP 数据库...")
-    for url in [
-        f"https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
-        f"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
-        f"https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
-    ]:
-        if os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
-            break
-        click.echo(f"  尝试: {url[:50]}...")
-        ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geoip.dat" "{url}" 2>/dev/null')
-        if ret == 0 and os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
-            click.echo("  ✓ 下载成功")
-            break
+    click.echo("\n4. 安装 GeoIP 数据库...")
+    if os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
+        click.echo("  ✓ GeoIP 数据库已存在")
+    elif has_vendor and (vendor_dir / "geoip.dat").is_file():
+        shutil.copy2(str(vendor_dir / "geoip.dat"), str(geo_dir / "geoip.dat"))
+        click.echo("  ✓ GeoIP 数据库已安装 (离线)")
     else:
-        click.echo("  ✗ 下载失败，请手动下载 geoip.dat 到 /etc/vpn-manager/")
+        click.echo("  尝试在线下载...")
+        for url in [
+            "https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.dat",
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat",
+        ]:
+            if os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
+                break
+            click.echo(f"  尝试: {url[:50]}...")
+            ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geoip.dat" "{url}" 2>/dev/null')
+            if ret == 0 and os.path.isfile(f"{geo_dir}/geoip.dat") and os.path.getsize(f"{geo_dir}/geoip.dat") > 0:
+                click.echo("  ✓ 下载成功")
+                break
+        else:
+            click.echo("  ✗ 下载失败，请手动下载 geoip.dat 到 /etc/vpn-manager/")
 
-    click.echo("\n5. 下载 GeoSite 数据库...")
-    for url in [
-        f"https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
-        f"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
-        f"https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
-    ]:
-        if os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
-            break
-        click.echo(f"  尝试: {url[:50]}...")
-        ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geosite.dat" "{url}" 2>/dev/null')
-        if ret == 0 and os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
-            click.echo("  ✓ 下载成功")
-            break
+    # GeoSite database
+    click.echo("\n5. 安装 GeoSite 数据库...")
+    if os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
+        click.echo("  ✓ GeoSite 数据库已存在")
+    elif has_vendor and (vendor_dir / "geosite.dat").is_file():
+        shutil.copy2(str(vendor_dir / "geosite.dat"), str(geo_dir / "geosite.dat"))
+        click.echo("  ✓ GeoSite 数据库已安装 (离线)")
     else:
-        click.echo("  ✗ 下载失败，请手动下载 geosite.dat 到 /etc/vpn-manager/")
+        click.echo("  尝试在线下载...")
+        for url in [
+            "https://ghproxy.com/https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+            "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+        ]:
+            if os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
+                break
+            click.echo(f"  尝试: {url[:50]}...")
+            ret = os.system(f'curl -L --connect-timeout 5 --max-time 30 -o "{geo_dir}/geosite.dat" "{url}" 2>/dev/null')
+            if ret == 0 and os.path.isfile(f"{geo_dir}/geosite.dat") and os.path.getsize(f"{geo_dir}/geosite.dat") > 0:
+                click.echo("  ✓ 下载成功")
+                break
+        else:
+            click.echo("  ✗ 下载失败，请手动下载 geosite.dat 到 /etc/vpn-manager/")
 
     click.echo("\n✓ 安装完成！")
     click.echo("   运行 python3 main.py web 启动 Web 面板")

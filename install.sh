@@ -1,85 +1,42 @@
 #!/bin/bash
+# ============================================================
+# VPN Manager — 一键安装脚本
+# 支持离线安装（vendor/ 目录存在时自动走离线）
+# ============================================================
+# 用法:
+#   sudo bash install.sh                    # 正常安装
+#   PROXY=http://127.0.0.1:7890 sudo bash install.sh  # 走代理下载
+# ============================================================
 set -e
 
-# ============================================================
-# VPN Manager — One-Click Install Script
-# ============================================================
-# 支持的系统: Ubuntu 20.04+, Debian 11+, CentOS 7+, AlmaLinux, Rocky Linux
-# 架构: amd64, arm64, armv7
-# ============================================================
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[✗]${NC} $1"; }
 step()  { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
 
-# 代理设置: 可设环境变量 PROXY=http://127.0.0.1:17890
-# 或通过 --proxy 参数传入，仅用于 GitHub 下载，不影响 apt
-PROXY="${PROXY:-}"
-
-# Try multiple mirror URLs for GitHub resources (China-friendly)
-download_with_mirrors() {
-    local output="$1"
-    shift
-    local urls=("$@")
-    for url in "${urls[@]}"; do
-        local mirror_url="$url"
-        # If direct GitHub URL fails, try ghproxy
-        if echo "$url" | grep -q "^https://github.com"; then
-            mirror_url="https://ghproxy.com/$url"
-        fi
-        # Try jsDelivr CDN for GitHub raw content
-        local jsdelivr_url=""
-        if echo "$url" | grep -q "github.com.*releases/download"; then
-            jsdelivr_url=$(echo "$url" | sed 's|https://github.com/\([^/]*\)/\([^/]*\)/releases/download/latest/\(.*\)|https://cdn.jsdelivr.net/gh/\1/\2@release/\3|')
-        fi
-
-        for try_url in "$jsdelivr_url" "$mirror_url" "$url"; do
-            [ -z "$try_url" ] && continue
-            info "尝试: $try_url"
-            local curl_cmd="curl -L --connect-timeout 5 --max-time 30"
-            [ -n "$PROXY" ] && curl_cmd="$curl_cmd --proxy $PROXY"
-            if $curl_cmd -o "$output" "$try_url" 2>/dev/null; then
-                if [ -s "$output" ]; then
-                    info "下载成功"
-                    return 0
-                fi
-            fi
-        done
-    done
-    return 1
-}
-
-# 代理设置: 可设环境变量 PROXY=http://127.0.0.1:17890
-# 或通过 --proxy 参数传入，仅用于 GitHub 下载，不影响 apt
 PROXY="${PROXY:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENDOR_DIR="$SCRIPT_DIR/vendor"
-INSTALL_DIR="/opt/vpn-manager"
-WORK_DIR="/etc/vpn-manager"
-BIN_DIR="/usr/local/bin"
 
-# --- Detect OS ---
+# 离线模式检测
+HAS_VENDOR=0
+if [ -d "$VENDOR_DIR" ] && [ -f "$VENDOR_DIR/mihomo" ]; then
+    HAS_VENDOR=1
+    info "检测到 vendor 目录，将使用离线安装"
+fi
+
+# 检测系统
 detect_os() {
     if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$ID
-        OS_VERSION=$VERSION_ID
+        . /etc/os-release; OS=$ID; OS_VERSION=$VERSION_ID
     else
         OS=$(uname -s)
     fi
-    echo "系统: $OS $OS_VERSION"
+    info "系统: $OS $OS_VERSION"
 }
 
-# --- Detect Architecture ---
 detect_arch() {
     case "$(uname -m)" in
         x86_64)  ARCH="amd64" ;;
@@ -87,37 +44,39 @@ detect_arch() {
         armv7l)  ARCH="armv7" ;;
         *)       error "不支持的架构: $(uname -m)"; exit 1 ;;
     esac
-    echo "架构: $ARCH"
+    info "架构: $ARCH"
 }
 
-# --- Install System Dependencies ---
-install_deps() {
-    step "安装系统依赖"
+install_system_deps() {
+    step "系统依赖"
+
+    # 离线模式：跳过系统包管理器（需要网络），假定系统已预装 python3
+    if [ "$HAS_VENDOR" = "1" ]; then
+        info "离线模式: 跳过系统包管理器，假定已安装 python3"
+        # 验证 python3 可用
+        if ! command -v python3 &>/dev/null; then
+            error "离线模式下未检测到 python3，请先在目标机器上安装 Python 3"
+            exit 1
+        fi
+        return 0
+    fi
 
     case "$OS" in
         ubuntu|debian)
-            apt-get update -qq
-            apt-get install -y -qq curl wget python3 python3-pip python3-venv unzip || true
+            apt-get update -qq 2>/dev/null && apt-get install -y -qq curl wget python3 python3-pip python3-venv unzip 2>/dev/null || warn "部分系统依赖安装失败，请手动安装 python3/pip/venv"
             ;;
         centos|rhel|almalinux|rocky|fedora)
-            if command -v dnf &>/dev/null; then
-                dnf install -y curl wget python3 python3-pip unzip
-            else
-                yum install -y curl wget python3 python3-pip unzip
-            fi
-            ;;
-        openwrt|lede)
-            opkg update
-            opkg install python3 python3-pip curl wget unzip
+            cmd="dnf install -y curl wget python3 python3-pip unzip"
+            command -v dnf &>/dev/null || cmd="yum install -y curl wget python3 python3-pip unzip"
+            $cmd 2>/dev/null || warn "部分系统依赖安装失败，请手动安装"
             ;;
         *)
-            warn "未知系统: $OS，尝试使用 pip 安装 Python 依赖"
+            warn "未知系统，跳过系统依赖"
             ;;
     esac
-    info "系统依赖安装完成"
+    info "系统依赖完成"
 }
 
-# --- Install mihomo ---
 install_mihomo() {
     step "安装 mihomo (Clash Meta)"
 
@@ -126,155 +85,103 @@ install_mihomo() {
         return 0
     fi
 
-    # 优先使用本地 vendor 目录中的文件
-    if [ -f "$VENDOR_DIR/mihomo" ]; then
-        info "从本地 vendor 安装..."
-        cp "$VENDOR_DIR/mihomo" "$BIN_DIR/mihomo"
-        chmod +x "$BIN_DIR/mihomo"
-        if [ -f "$BIN_DIR/mihomo" ]; then
-            info "mihomo 安装成功: $BIN_DIR/mihomo"
-            return 0
-        fi
+    # 离线安装
+    if [ "$HAS_VENDOR" = "1" ] && [ -f "$VENDOR_DIR/mihomo" ]; then
+        cp "$VENDOR_DIR/mihomo" /usr/local/bin/mihomo
+        chmod +x /usr/local/bin/mihomo
+        info "mihomo 安装成功 (离线)"
+        return 0
     fi
 
-    # Try to detect latest version via proxy-friendly API
-    info "获取最新版本信息..."
-    VERSION_URL="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-    API_CURL="curl -s --connect-timeout 5 --max-time 10"
-    [ -n "$PROXY" ] && API_CURL="$API_CURL --proxy $PROXY"
-    VERSION=$($API_CURL "$VERSION_URL" 2>/dev/null \
-        | grep '"tag_name"' \
-        | cut -d '"' -f 4 \
-        | sed 's/^v//')
-
-    if [ -z "$VERSION" ]; then
-        warn "无法获取最新版本号，使用默认版本 v1.19.27"
-        VERSION="1.19.27"
+    # 在线下载
+    warn "vendor 中未找到 mihomo，尝试在线下载..."
+    VERSION=$VERSION
+    [ -z "$VERSION" ] && VERSION="1.19.27"
+    if command -v mihomo &>/dev/null; then
+        info "mihomo 已存在"
+        return 0
     fi
 
-    FILENAME="mihomo-linux-${ARCH}-v${VERSION}.gz"
-    DOWNLOAD_URL="https://github.com/MetaCubeX/mihomo/releases/download/v${VERSION}/${FILENAME}"
-
-    info "下载 mihomo v${VERSION}..."
-    TMP_DIR=$(mktemp -d)
-    cd "$TMP_DIR"
-
-    if download_with_mirrors "mihomo.gz" "$DOWNLOAD_URL"; then
-        gunzip -f mihomo.gz 2>/dev/null || true
-        find . -name "mihomo*" -type f | head -1 | while read f; do
-            cp "$f" "$BIN_DIR/mihomo"
-            chmod +x "$BIN_DIR/mihomo"
-        done
-        if [ -f "$BIN_DIR/mihomo" ]; then
-            info "mihomo 安装成功: $BIN_DIR/mihomo ($(mihomo --version 2>/dev/null | head -1))"
-        else
-            warn "mihomo 解压失败，请手动安装"
-        fi
-    else
-        warn "网络下载失败，请按以下步骤手动安装:"
-        warn "1. 本地下载: https://github.com/MetaCubeX/mihomo/releases/tag/v${VERSION}"
-        warn "2. 选择 ${FILENAME}"
-        warn "3. 上传到服务器后: gunzip ${FILENAME} && chmod +x mihomo-linux-*-v* && mv mihomo-linux-*-v* /usr/local/bin/mihomo"
-        warn "4. 或本地运行 bash download-deps.sh 打包所有依赖"
-    fi
-
-    cd /
-    rm -rf "$TMP_DIR"
+    warn "请手动下载 mihomo 到 /usr/local/bin/"
+    warn "下载地址: https://github.com/MetaCubeX/mihomo/releases"
 }
 
-# --- Install Python Dependencies ---
 install_python_deps() {
     step "安装 Python 依赖"
-
     cd "$SCRIPT_DIR"
 
-    # Create virtual environment if not exists
+    # 创建虚拟环境
+    INSTALL_DIR="/opt/vpn-manager"
+    mkdir -p "$INSTALL_DIR"
+
     if [ ! -d "$INSTALL_DIR/venv" ]; then
         python3 -m venv "$INSTALL_DIR/venv"
         info "创建 Python 虚拟环境"
     fi
 
-    # Install requirements (优先本地 wheels，再试网络)
-    "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -q 2>/dev/null || true
-
-    if [ -d "$VENDOR_DIR/wheels" ] && ls "$VENDOR_DIR/wheels/"*.whl &>/dev/null 2>&1; then
-        info "从本地 vendor/wheels 安装 Python 依赖..."
-        "$INSTALL_DIR/venv/bin/pip" install --no-index --find-links "$VENDOR_DIR/wheels" -r requirements.txt -q && \
-            info "Python 依赖安装完成" && return 0
+    # 离线安装
+    if [ "$HAS_VENDOR" = "1" ] && [ -d "$VENDOR_DIR/wheels" ] && ls "$VENDOR_DIR/wheels/"*.whl &>/dev/null 2>&1; then
+        info "从 vendor/wheels 离线安装 Python 依赖..."
+        "$INSTALL_DIR/venv/bin/pip" install --no-index --find-links "$VENDOR_DIR/wheels" -r "$SCRIPT_DIR/requirements.txt" -q \
+            && info "Python 依赖安装完成 (离线)" && _setup_entrypoint && return 0
     fi
 
-    if "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q 2>/dev/null; then
-        info "Python 依赖安装完成"
-    else
-        warn "使用阿里云镜像重试..."
-        "$INSTALL_DIR/venv/bin/pip" install -r requirements.txt -q \
-            -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com || \
-        warn "pip 安装失败，请手动执行: pip install -r requirements.txt"
-    fi
+    # 在线安装
+    "$INSTALL_DIR/venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt" -q 2>/dev/null || \
+    "$INSTALL_DIR/venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt" -q \
+        -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com 2>/dev/null || \
+    "$INSTALL_DIR/venv/bin/pip" install fastapi uvicorn jinja2 httpx pyyaml pydantic click pick -q 2>/dev/null || \
+    warn "pip 安装失败，请手动执行: pip install -r requirements.txt"
 
-    # Create symlink for vpn-manager command
-    cat > "$BIN_DIR/vpn-manager" << 'EOF'
+    info "Python 依赖安装完成"
+    _setup_entrypoint
+}
+
+_setup_entrypoint() {
+    # 复制项目文件到安装目录
+    cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
+    cp -r "$SCRIPT_DIR"/.[!.]* "$INSTALL_DIR/" 2>/dev/null || true
+    chmod +x "$INSTALL_DIR/vpn-manager.sh" 2>/dev/null || true
+
+    # 创建 /usr/local/bin/vpn-manager 命令
+    cat > /usr/local/bin/vpn-manager << 'EOF'
 #!/bin/bash
 cd /opt/vpn-manager
 /opt/vpn-manager/venv/bin/python3 main.py "$@"
 EOF
-    chmod +x "$BIN_DIR/vpn-manager"
+    chmod +x /usr/local/bin/vpn-manager
     info "创建命令: vpn-manager"
+
+    # 快捷别名
+    if ! grep -q "alias vpn=" /root/.bashrc 2>/dev/null; then
+        echo 'alias vpn="vpn-manager"' >> /root/.bashrc
+    fi
 }
 
-# --- Setup Working Directory ---
 setup_workdir() {
-    step "创建工作目录"
+    step "配置工作目录"
+    local work_dir="/etc/vpn-manager"
+    mkdir -p "$work_dir"
 
-    mkdir -p "$WORK_DIR"
-    mkdir -p "$INSTALL_DIR"
-
-    # Copy project files
-    cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>/dev/null || true
-    cp -r "$SCRIPT_DIR"/.[!.]* "$INSTALL_DIR/" 2>/dev/null || true
-
-    # Download GeoIP/GeoSite databases (with mirror fallback)
-    if [ ! -f "$WORK_DIR/geoip.dat" ]; then
-        # 优先使用本地 vendor 文件
-        if [ -f "$VENDOR_DIR/geoip.dat" ]; then
-            cp "$VENDOR_DIR/geoip.dat" "$WORK_DIR/geoip.dat"
-            info "从本地 vendor 安装 GeoIP 数据库"
-        else
-            info "下载 GeoIP 数据库..."
-            if download_with_mirrors "$WORK_DIR/geoip.dat" \
-                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat"; then
-                info "GeoIP 数据库下载完成"
-            else
-                warn "GeoIP 下载失败，可稍后手动下载"
-                warn "下载后放置到: $WORK_DIR/geoip.dat"
-            fi
-        fi
+    # 复制 GeoIP 数据库
+    if [ -f "$VENDOR_DIR/geoip.dat" ] && [ ! -f "$work_dir/geoip.dat" ]; then
+        cp "$VENDOR_DIR/geoip.dat" "$work_dir/geoip.dat" && info "GeoIP 数据库已安装"
+    fi
+    if [ -f "$VENDOR_DIR/geosite.dat" ] && [ ! -f "$work_dir/geosite.dat" ]; then
+        cp "$VENDOR_DIR/geosite.dat" "$work_dir/geosite.dat" && info "GeoSite 数据库已安装"
+    fi
+    if [ ! -f "$work_dir/geoip.dat" ]; then
+        warn "GeoIP 数据库缺失，可稍后手动下载放到 $work_dir/"
     fi
 
-    if [ ! -f "$WORK_DIR/geosite.dat" ]; then
-        # 优先使用本地 vendor 文件
-        if [ -f "$VENDOR_DIR/geosite.dat" ]; then
-            cp "$VENDOR_DIR/geosite.dat" "$WORK_DIR/geosite.dat"
-            info "从本地 vendor 安装 GeoSite 数据库"
-        else
-            info "下载 GeoSite 数据库..."
-            if download_with_mirrors "$WORK_DIR/geosite.dat" \
-                "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"; then
-                info "GeoSite 数据库下载完成"
-            else
-                warn "GeoSite 下载失败，可稍后手动下载"
-                warn "下载后放置到: $WORK_DIR/geosite.dat"
-            fi
-        fi
-    fi
+    # Web UI
+    cp -r "$SCRIPT_DIR/web" "$INSTALL_DIR/" 2>/dev/null || true
 
-    info "工作目录: $WORK_DIR"
+    info "工作目录: $work_dir"
 }
 
-# --- Create Systemd Service ---
 setup_service() {
     step "配置系统服务"
-
     cat > /etc/systemd/system/vpn-manager.service << 'SERVICE'
 [Unit]
 Description=VPN Manager - Clash Meta Proxy Service
@@ -286,7 +193,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/vpn-manager
 ExecStartPre=/usr/local/bin/mihomo -d /etc/vpn-manager --test
-ExecStart=/opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py web --port 8080
+ExecStart=/opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py web --host 127.0.0.1 --port 8080
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -294,67 +201,49 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 SERVICE
-
     systemctl daemon-reload
-    info "服务文件已创建: vpn-manager.service"
-    info "使用 systemctl start vpn-manager 启动服务"
-    info "使用 systemctl enable vpn-manager 设置开机自启"
+    info "服务已创建: systemctl start vpn-manager"
 }
 
-# --- Create Alias for Convenience ---
-setup_alias() {
-    # Add alias to .bashrc for root
-    if ! grep -q "alias vpn=" /root/.bashrc 2>/dev/null; then
-        echo 'alias vpn="vpn-manager"' >> /root/.bashrc
-    fi
+show_summary() {
+    echo ""
+    echo -e "${GREEN}============================================${NC}"
+    echo -e "${GREEN}  安装完成！${NC}"
+    echo -e "${GREEN}============================================${NC}"
+    echo ""
+    echo "  常用命令:"
+    echo "    vpn-manager status              # 查看状态"
+    echo "    vpn-manager start               # 启动代理"
+    echo "    vpn-manager select              # 交互式选节点"
+    echo "    vpn-manager import url <URL>    # 导入订阅"
+    echo "    vpn-manager web --port 8080     # Web 面板"
+    echo ""
+    echo "  快捷命令: vpn (等同于 vpn-manager)"
+    echo ""
 }
 
-# --- Main ---
+# ============ Main ============
 main() {
     echo ""
     echo -e "${CYAN}============================================${NC}"
-    echo -e "${CYAN}   VPN Manager — One-Click Install${NC}"
-    echo -e "${CYAN}   Clash Meta Subscription Manager${NC}"
+    echo -e "${CYAN}   VPN Manager 安装程序${NC}"
     echo -e "${CYAN}============================================${NC}"
     echo ""
 
     detect_os
     detect_arch
 
-    # Check root
     if [ "$(id -u)" -ne 0 ]; then
-        error "请以 root 用户运行 (sudo bash install.sh)"
+        error "请以 root 用户运行: sudo bash install.sh"
         exit 1
     fi
 
-    install_deps
+    install_system_deps
     install_mihomo
     install_python_deps
     setup_workdir
     setup_service
-    setup_alias
-
-    echo ""
-    echo -e "${GREEN}============================================${NC}"
-    echo -e "${GREEN}  安装完成！${NC}"
-    echo -e "${GREEN}============================================${NC}"
-    echo ""
-    echo "  Web 管理面板:"
-    echo "    vpn-manager web --port 8080"
-    echo "    或 systemctl start vpn-manager"
-    echo ""
-    echo "  命令行管理:"
-    echo "    vpn-manager status         查看状态"
-    echo "    vpn-manager start          启动代理"
-    echo "    vpn-manager stop           停止代理"
-    echo "    vpn-manager mode rule      规则模式"
-    echo "    vpn-manager mode global    全局模式"
-    echo "    vpn-manager mode direct    直连模式"
-    echo "    vpn-manager import url <URL>  导入订阅"
-    echo "    vpn-manager list           查看节点"
-    echo ""
-    echo "  快捷命令: vpn (等同于 vpn-manager)"
-    echo ""
+    show_summary
 }
 
 main "$@"
