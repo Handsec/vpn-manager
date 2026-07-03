@@ -163,7 +163,7 @@ _setup_entrypoint() {
     cp -r "$SCRIPT_DIR"/.[!.]* "$INSTALL_DIR/" 2>/dev/null || true
     chmod +x "$INSTALL_DIR/vpn-manager.sh" 2>/dev/null || true
 
-    # 创建 /usr/local/bin/vpn-manager 命令
+    # 创建 /usr/local/bin/vpn-manager 命令（供 systemd 等非交互环境使用）
     cat > /usr/local/bin/vpn-manager << 'EOF'
 #!/bin/bash
 cd /opt/vpn-manager
@@ -172,10 +172,31 @@ EOF
     chmod +x /usr/local/bin/vpn-manager
     info "创建命令: vpn-manager"
 
-    # 快捷别名
-    if ! grep -q "alias vpn=" /root/.bashrc 2>/dev/null; then
-        echo 'alias vpn="vpn-manager"' >> /root/.bashrc
+    # 创建 vpn shell 函数（支持在当前 shell 注入代理环境变量）
+    cat > /etc/profile.d/vpn-manager.sh << 'FUNC_EOF'
+# vpn-manager shell function — 支持自动设置代理环境变量
+vpn() {
+    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"
+    local rc=$?
+    case "$1" in
+        start)
+            [ -f /etc/profile.d/proxy.sh ] && source /etc/profile.d/proxy.sh
+            ;;
+        stop)
+            unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+            ;;
+    esac
+    return $rc
+}
+FUNC_EOF
+    chmod +x /etc/profile.d/vpn-manager.sh
+
+    # 确保当前 shell 和 .bashrc 加载此函数
+    source /etc/profile.d/vpn-manager.sh 2>/dev/null || true
+    if ! grep -q "vpn-manager.sh" /root/.bashrc 2>/dev/null; then
+        echo 'source /etc/profile.d/vpn-manager.sh' >> /root/.bashrc
     fi
+    info "创建 vpn 命令 (shell 函数，支持自动代理环境)"
 }
 
 setup_workdir() {

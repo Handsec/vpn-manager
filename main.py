@@ -67,11 +67,98 @@ def web(host, port, no_open):
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
+PROXY_SH = "/etc/profile.d/proxy.sh"
+PROXY_ENV = "/etc/environment"
+
+SYSTEM_PROXY_SH = """export ALL_PROXY=http://127.0.0.1:7890
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+"""
+
+SYSTEM_PROXY_ENV = """http_proxy=http://127.0.0.1:7890
+https_proxy=http://127.0.0.1:7890
+ALL_PROXY=http://127.0.0.1:7890
+NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+"""
+
+
+def _write_proxy_config():
+    """Write system-wide proxy configuration files."""
+    try:
+        with open(PROXY_SH, "w") as f:
+            f.write(SYSTEM_PROXY_SH)
+    except PermissionError:
+        return False
+
+    try:
+        with open(PROXY_ENV, "r") as f:
+            content = f.read()
+        if "http_proxy=http://127.0.0.1:7890" not in content:
+            with open(PROXY_ENV, "a") as f:
+                f.write("\n" + SYSTEM_PROXY_ENV)
+    except (PermissionError, FileNotFoundError):
+        try:
+            with open(PROXY_ENV, "w") as f:
+                f.write(SYSTEM_PROXY_ENV)
+        except PermissionError:
+            return False
+
+    # 确保 shell 函数可用（旧安装无需重装）
+    sh_func = "/etc/profile.d/vpn-manager.sh"
+    if not os.path.exists(sh_func):
+        try:
+            with open(sh_func, "w") as f:
+                f.write('vpn() {\n'
+                        '    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"\n'
+                        '    local rc=$?\n'
+                        '    case "$1" in\n'
+                        '        start) [ -f /etc/profile.d/proxy.sh ] && . /etc/profile.d/proxy.sh ;;\n'
+                        '        stop)  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY ;;\n'
+                        '    esac\n'
+                        '    return $rc\n'
+                        '}\n')
+        except PermissionError:
+            pass
+
+    return True
+
+
+def _remove_proxy_config():
+    """Remove system-wide proxy configuration files."""
+    removed = False
+    for path in [PROXY_SH]:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                removed = True
+        except PermissionError:
+            pass
+
+    try:
+        if os.path.exists(PROXY_ENV):
+            with open(PROXY_ENV, "r") as f:
+                lines = f.readlines()
+            keep = [l for l in lines if "http_proxy" not in l and "https_proxy" not in l and "ALL_PROXY" not in l and "NO_PROXY" not in l]
+            with open(PROXY_ENV, "w") as f:
+                f.writelines(keep)
+            removed = True
+    except PermissionError:
+        pass
+
+    return removed
+
+
 @cli.command()
 def start():
     """启动 mihomo 引擎"""
     result = eng.start()
     click.echo(result)
+
+    if not "错误" in result and not "已在运行" in result:
+        if _write_proxy_config():
+            click.echo("系统代理已配置，重新登录后所有流量自动走 mihomo 规则")
+            click.echo("运行 source /etc/profile.d/proxy.sh 立即当前 shell 生效")
 
 
 @cli.command()
@@ -79,6 +166,9 @@ def stop():
     """停止 mihomo 引擎"""
     result = eng.stop()
     click.echo(result)
+
+    if _remove_proxy_config():
+        click.echo("系统代理配置已清理")
 
 
 @cli.command()
