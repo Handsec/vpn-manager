@@ -113,7 +113,7 @@ def _write_proxy_config():
                         '    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"\n'
                         '    local rc=$?\n'
                         '    case "$1" in\n'
-                        '        start) [ -f /etc/profile.d/proxy.sh ] && . /etc/profile.d/proxy.sh ;;\n'
+                        '        start|restart) [ -f /etc/profile.d/proxy.sh ] && . /etc/profile.d/proxy.sh ;;\n'
                         '        stop)  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY ;;\n'
                         '    esac\n'
                         '    return $rc\n'
@@ -155,10 +155,9 @@ def start():
     result = eng.start()
     click.echo(result)
 
-    if not "错误" in result and not "已在运行" in result:
+    if not "错误" in result:
         if _write_proxy_config():
-            click.echo("系统代理已配置，重新登录后所有流量自动走 mihomo 规则")
-            click.echo("运行 source /etc/profile.d/proxy.sh 立即当前 shell 生效")
+            click.echo("系统代理已配置")
 
 
 @cli.command()
@@ -168,7 +167,7 @@ def stop():
     click.echo(result)
 
     if _remove_proxy_config():
-        click.echo("系统代理配置已清理")
+        click.echo("系统代理已清理")
 
 
 @cli.command()
@@ -176,6 +175,10 @@ def restart():
     """重启 mihomo 引擎"""
     result = eng.restart()
     click.echo(result)
+
+    if not "错误" in result:
+        if _write_proxy_config():
+            click.echo("系统代理已配置")
 
 
 @cli.command()

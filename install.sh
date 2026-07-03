@@ -179,7 +179,7 @@ vpn() {
     /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"
     local rc=$?
     case "$1" in
-        start)
+        start|restart)
             [ -f /etc/profile.d/proxy.sh ] && source /etc/profile.d/proxy.sh
             ;;
         stop)
