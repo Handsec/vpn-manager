@@ -21,6 +21,7 @@ allow-lan: {allow_lan}
 log-level: {log_level}
 mode: {mode}
 ipv6: false
+geodata-mode: true
 external-controller: 0.0.0.0:{api_port}
 external-ui: /etc/vpn-manager/ui
 
@@ -72,6 +73,7 @@ class EngineManager:
             "log-level": server.log_level,
             "mode": "rule",
             "ipv6": False,
+            "geodata-mode": True,
             "external-controller": f"0.0.0.0:{server.api_port}",
             "proxies": all_proxies,
         }
@@ -86,12 +88,11 @@ class EngineManager:
             config["mode"] = "global"
             config["proxy-groups"] = [
                 {
-                    "name": "PROXY",
+                    "name": "GLOBAL",
                     "type": "select",
                     "proxies": proxy_names if proxy_names else ["DIRECT"],
                 },
             ]
-            config["rules"] = ["MATCH,PROXY"]
             return config
 
         # Rule mode
@@ -112,15 +113,67 @@ class EngineManager:
             },
         ]
 
+        config["rule-providers"] = {
+            "gfw": {
+                "type": "file",
+                "behavior": "classical",
+                "path": "/etc/vpn-manager/gfw.list",
+            },
+        }
+
         config["rules"] = [
+            # === 广告拦截 ===
             "GEOSITE,category-ads,REJECT",
+
+            # === 私有网络直连 ===
             "GEOSITE,private,DIRECT",
+
+            # === 国内服务直连（获取 CDN 加速） ===
             "GEOSITE,microsoft@cn,DIRECT",
             "GEOSITE,apple-cn,DIRECT",
             "GEOSITE,google-cn,DIRECT",
             "GEOSITE,category-games@cn,DIRECT",
             "GEOSITE,cn,DIRECT",
+
+            # === 国内 IP 直连 ===
             "GEOIP,CN,DIRECT",
+
+            # === AI 服务走代理 ===
+            "GEOSITE,category-ai-chat-!cn,PROXY",
+
+            # === 流媒体走代理 ===
+            "GEOSITE,netflix,PROXY",
+            "GEOSITE,disney,PROXY",
+            "GEOSITE,youtube,PROXY",
+
+            # === 社交媒体走代理 ===
+            "GEOSITE,twitter,PROXY",
+            "GEOSITE,facebook,PROXY",
+            "GEOSITE,telegram,PROXY",
+            "GEOSITE,instagram,PROXY",
+            "GEOSITE,tiktok,PROXY",
+            "GEOSITE,reddit,PROXY",
+
+            # === 开发相关走代理 ===
+            "GEOSITE,github,PROXY",
+            "GEOSITE,stackexchange,PROXY",
+            "GEOSITE,docker,PROXY",
+            "GEOSITE,python,PROXY",
+
+            # === GFWList 特定域名走代理（4026 条，覆盖被墙站点） ===
+            "RULE-SET,gfw,PROXY",
+
+            # === Google 全系走代理 ===
+            "GEOSITE,google,PROXY",
+
+            # === Microsoft 国际服务走代理 ===
+            "GEOSITE,microsoft,PROXY",
+            "GEOSITE,onedrive,PROXY",
+
+            # === 其他非中国区域走代理 ===
+            "GEOSITE,geolocation-!cn,PROXY",
+
+            # === 兜底 ===
             "MATCH,PROXY",
         ]
 
@@ -196,8 +249,8 @@ class EngineManager:
         try:
             self.process = subprocess.Popen(
                 [bin_path, "-d", str(work_dir), "-f", config_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
             # Write PID
             pid_file = work_dir / "mihomo.pid"
@@ -206,8 +259,7 @@ class EngineManager:
             # Wait briefly to check for immediate failure
             time.sleep(1)
             if self.process.poll() is not None:
-                stderr = self.process.stderr.read().decode(errors="replace") if self.process.stderr else ""
-                return f"启动失败: {stderr[:500]}"
+                return f"启动失败: mihomo 进程异常退出 (exit code: {self.process.returncode})"
 
             return (
                 f"mihomo 已启动 (PID: {self.process.pid})\n"

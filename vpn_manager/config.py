@@ -78,8 +78,13 @@ class ConfigManager:
 
     def get_all_proxies(self) -> list[dict]:
         proxies = []
+        seen_names = set()
         for sub in self.config.subscriptions.values():
-            proxies.extend(sub.proxies)
+            for p in sub.proxies:
+                name = p.get("name", "")
+                if name not in seen_names:
+                    seen_names.add(name)
+                    proxies.append(p)
         return proxies
 
     def update_server_config(self, **kwargs) -> None:

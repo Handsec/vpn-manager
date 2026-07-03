@@ -70,15 +70,15 @@ def web(host, port, no_open):
 PROXY_SH = "/etc/profile.d/proxy.sh"
 PROXY_ENV = "/etc/environment"
 
-SYSTEM_PROXY_SH = """export ALL_PROXY=http://127.0.0.1:7890
-export http_proxy=http://127.0.0.1:7890
-export https_proxy=http://127.0.0.1:7890
+SYSTEM_PROXY_SH = """export ALL_PROXY=http://127.0.0.1:7892
+export http_proxy=http://127.0.0.1:7892
+export https_proxy=http://127.0.0.1:7892
 export NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 """
 
-SYSTEM_PROXY_ENV = """http_proxy=http://127.0.0.1:7890
-https_proxy=http://127.0.0.1:7890
-ALL_PROXY=http://127.0.0.1:7890
+SYSTEM_PROXY_ENV = """http_proxy=http://127.0.0.1:7892
+https_proxy=http://127.0.0.1:7892
+ALL_PROXY=http://127.0.0.1:7892
 NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 """
 
@@ -91,35 +91,44 @@ def _write_proxy_config():
     except PermissionError:
         return False
 
+    # 清理 /etc/environment 中旧的代理配置项，再写入最新配置
     try:
-        with open(PROXY_ENV, "r") as f:
-            content = f.read()
-        if "http_proxy=http://127.0.0.1:7890" not in content:
-            with open(PROXY_ENV, "a") as f:
-                f.write("\n" + SYSTEM_PROXY_ENV)
-    except (PermissionError, FileNotFoundError):
-        try:
+        if os.path.exists(PROXY_ENV):
+            with open(PROXY_ENV, "r") as f:
+                lines = f.readlines()
+            keep = [l for l in lines
+                    if "http_proxy" not in l
+                    and "https_proxy" not in l
+                    and "ALL_PROXY" not in l
+                    and "NO_PROXY" not in l]
+            keep.append("\n" + SYSTEM_PROXY_ENV)
+            with open(PROXY_ENV, "w") as f:
+                f.writelines(keep)
+        else:
             with open(PROXY_ENV, "w") as f:
                 f.write(SYSTEM_PROXY_ENV)
-        except PermissionError:
-            return False
+    except PermissionError:
+        return False
 
-    # 确保 shell 函数可用（旧安装无需重装）
+    # 确保 shell 函数可用（始终写入最新版本）
     sh_func = "/etc/profile.d/vpn-manager.sh"
-    if not os.path.exists(sh_func):
-        try:
-            with open(sh_func, "w") as f:
-                f.write('vpn() {\n'
-                        '    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"\n'
-                        '    local rc=$?\n'
-                        '    case "$1" in\n'
-                        '        start|restart) [ -f /etc/profile.d/proxy.sh ] && . /etc/profile.d/proxy.sh ;;\n'
-                        '        stop)  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY ;;\n'
-                        '    esac\n'
-                        '    return $rc\n'
-                        '}\n')
-        except PermissionError:
-            pass
+    try:
+        with open(sh_func, "w") as f:
+            f.write('vpn() {\n'
+                    '    /opt/vpn-manager/venv/bin/python3 /opt/vpn-manager/main.py "$@"\n'
+                    '    local rc=$?\n'
+                    '    case "$1" in\n'
+                    '        stop)  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY ;;\n'
+                    '        *)\n'
+                    '            if [ -f /etc/profile.d/proxy.sh ]; then\n'
+                    '                . /etc/profile.d/proxy.sh\n'
+                    '            fi\n'
+                    '            ;;\n'
+                    '    esac\n'
+                    '    return $rc\n'
+                    '}\n')
+    except PermissionError:
+        pass
 
     return True
 
@@ -210,12 +219,15 @@ def mode(mode):
 
 @cli.command()
 @click.argument("proxy_name", required=False)
-@click.option("--group", default="PROXY", help="代理组名称 (默认: PROXY)")
+@click.option("--group", default=None, help="代理组名称 (默认: 根据模式自动选择 PROXY/GLOBAL)")
 def select(proxy_name, group):
     """选择代理节点（不带参数时进入交互式选择）"""
     if not proxy_name:
-        _interactive_select(group)
+        _interactive_select()
         return
+    if group is None:
+        mode = cfg.get_mode()
+        group = "GLOBAL" if mode == ProxyMode.GLOBAL else "PROXY"
     result = eng.select_proxy(group, proxy_name)
     click.echo(result)
 
@@ -234,7 +246,7 @@ def _interactive_select(default_group="PROXY"):
     proxies_data = eng.get_proxies()
     groups = {}
     for name, info in proxies_data.items():
-        if info.get("type") in ("Selector", "URLTest", "Fallback"):
+        if info.get("type", "").lower() in ("selector", "url-test", "fallback"):
             groups[name] = {
                 "type": info.get("type"),
                 "now": info.get("now", ""),
@@ -245,15 +257,15 @@ def _interactive_select(default_group="PROXY"):
         click.echo("未获取到代理组信息")
         return
 
-    # If multiple groups, let user pick group first
+    # 根据当前模式选择最佳默认组
+    current_mode = cfg.get_mode()
+    if current_mode == ProxyMode.GLOBAL:
+        default_group = "GLOBAL"
+    elif current_mode == ProxyMode.RULE:
+        default_group = "PROXY"
+
     group_names = list(groups.keys())
     target_group = default_group if default_group in group_names else group_names[0]
-    if len(group_names) > 1:
-        opts = [f"{g}  (当前: {groups[g]['now']})" for g in group_names]
-        selected, idx = pick(opts, "选择代理组 (↑↓ 键移动, Enter 确认):")
-        target_group = group_names[idx]
-    else:
-        target_group = group_names[0]
 
     # Show current selection and let user pick a proxy
     g = groups[target_group]
